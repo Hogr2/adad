@@ -48,7 +48,18 @@
                 <action android:name="android.intent.action.QUICKBOOT_POWERON"/>
             </intent-filter>
         </receiver>
-        
+
+        <!-- REQUIRED: catches the AlarmManager broadcast when a zonedSchedule()
+             reminder actually fires. flutter_local_notifications does NOT
+             bundle this in its own library manifest — it must be declared
+             here, or scheduled (as opposed to immediate) notifications never
+             appear, with no error anywhere. -->
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+
+        <!-- Needed if/when notification action buttons are used; same
+             "plugin references it but doesn't self-provide it" situation. -->
+        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ActionBroadcastReceiver" />
+
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and
