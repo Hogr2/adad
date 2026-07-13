@@ -36,6 +36,16 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // The Flutter Gradle plugin already runs R8 on release builds by
+            // default; stating it explicitly makes that visible, and the
+            // proguardFiles line is required for our custom keep rules
+            // (flutter_local_notifications/Gson) to actually be applied.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
         }
     }
 }
