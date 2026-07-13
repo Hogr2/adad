@@ -443,6 +443,8 @@ class Habit {
   List<String> failedDates; // yyyy-MM-dd strings
   int? reminderHour; // null = no reminder set for this habit
   int? reminderMinute;
+  Map<String, int> dayColors; // yyyy-MM-dd -> Color.toARGB32()
+  Map<String, String> dayNotes; // yyyy-MM-dd -> free-text note
 
   Habit({
     required this.id,
@@ -453,7 +455,11 @@ class Habit {
     List<String>? failedDates,
     this.reminderHour,
     this.reminderMinute,
-  }) : failedDates = failedDates ?? [];
+    Map<String, int>? dayColors,
+    Map<String, String>? dayNotes,
+  })  : failedDates = failedDates ?? [],
+        dayColors = dayColors ?? {},
+        dayNotes = dayNotes ?? {};
 
   Color get color => Color(colorValue);
 
@@ -507,6 +513,8 @@ class Habit {
         'failedDates': failedDates,
         'reminderHour': reminderHour,
         'reminderMinute': reminderMinute,
+        'dayColors': dayColors,
+        'dayNotes': dayNotes,
       };
 
   factory Habit.fromJson(Map<String, dynamic> json) => Habit(
@@ -522,6 +530,14 @@ class Habit {
         // treated as "no reminder set", same as a freshly created habit.
         reminderHour: json['reminderHour'] as int?,
         reminderMinute: json['reminderMinute'] as int?,
+        // Absent in habits saved before per-day colors/notes existed —
+        // treated as empty maps, same as a freshly created habit.
+        dayColors: json['dayColors'] != null
+            ? Map<String, int>.from(json['dayColors'] as Map)
+            : null,
+        dayNotes: json['dayNotes'] != null
+            ? Map<String, String>.from(json['dayNotes'] as Map)
+            : null,
       );
 }
 
@@ -1441,42 +1457,193 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
     widget.onHabitUpdated();
   }
 
-  void _reallyEndCount() {
-    final today = dateOnly(DateTime.now());
-    setState(() => habit.failedDates.add(fmtDate(today)));
+  /// Toggles a day's missed state. Marking is now trivially reversible
+  /// (tap again to undo), so there is no confirmation dialog — a SnackBar
+  /// gives feedback instead, which is enough for a two-way action.
+  void _toggleMissedFor(DateTime day) {
+    final key = fmtDate(dateOnly(day));
+    final wasMissed = habit.failedDates.contains(key);
+    setState(() {
+      if (wasMissed) {
+        habit.failedDates.remove(key);
+      } else {
+        habit.failedDates.add(key);
+      }
+    });
     widget.onHabitUpdated();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          duration: const Duration(seconds: 2),
+          content: Text(
+            wasMissed
+                ? 'Un-marked $key — no longer counted as missed.'
+                : 'Marked $key as missed. Tap the day again to undo.',
+          ),
+        ),
+      );
   }
 
-  Future<void> _handleEndCountTap() async {
-    if (_alreadyMarkedMissedToday) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Already marked as missed today.')),
-      );
-      return;
-    }
+  /// Long-press options for a single day: missed toggle, custom color,
+  /// and a free-text note.
+  Future<void> _showDayOptions(DateTime day) async {
+    final key = fmtDate(dateOnly(day));
+    final noteController = TextEditingController(
+      text: habit.dayNotes[key] ?? '',
+    );
 
-    final confirmed = await showDialog<bool>(
+    await showModalBottomSheet(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Mark today as missed?'),
-        content: const Text(
-          "Mark today as missed? This day will be marked in red, but your "
-          "overall progress won't completely reset.",
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            style: FilledButton.styleFrom(backgroundColor: kBrokenColor),
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('Missed Today'),
-          ),
-        ],
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setSheetState) {
+          final isMissed = habit.failedDates.contains(key);
+          final customColorValue = habit.dayColors[key];
+          return Padding(
+            // Keep the note field visible above the keyboard.
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(ctx).viewInsets.bottom,
+            ),
+            child: SingleChildScrollView(
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 16),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          decoration: BoxDecoration(
+                            color: onSurfaceFaded(ctx, 0.15),
+                            borderRadius: BorderRadius.circular(2),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Center(
+                        child: Text(
+                          key,
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: onSurface(ctx),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Marked as missed'),
+                        activeThumbColor: kBrokenColor,
+                        value: isMissed,
+                        onChanged: (_) {
+                          _toggleMissedFor(day);
+                          setSheetState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Day color',
+                            style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
+                          ),
+                          if (customColorValue != null)
+                            TextButton(
+                              onPressed: () {
+                                setState(() => habit.dayColors.remove(key));
+                                widget.onHabitUpdated();
+                                setSheetState(() {});
+                              },
+                              child: const Text('Remove color'),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      _ColorPicker(
+                        // 0x00000000 matches no palette entry, so nothing
+                        // renders as selected when no custom color is set.
+                        selected: customColorValue != null
+                            ? Color(customColorValue)
+                            : const Color(0x00000000),
+                        onSelected: (c) {
+                          setState(
+                            () => habit.dayColors[key] = c.toARGB32(),
+                          );
+                          widget.onHabitUpdated();
+                          setSheetState(() {});
+                        },
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Note',
+                        style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: noteController,
+                        maxLines: 3,
+                        minLines: 1,
+                        decoration: const InputDecoration(
+                          hintText: 'Write a note for this day...',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          if (habit.dayNotes.containsKey(key))
+                            TextButton(
+                              onPressed: () {
+                                setState(() => habit.dayNotes.remove(key));
+                                widget.onHabitUpdated();
+                                noteController.clear();
+                                setSheetState(() {});
+                              },
+                              child: const Text(
+                                'Delete note',
+                                style: TextStyle(color: kBrokenColor),
+                              ),
+                            ),
+                          const SizedBox(width: 8),
+                          FilledButton(
+                            onPressed: () {
+                              final text = noteController.text.trim();
+                              setState(() {
+                                if (text.isEmpty) {
+                                  habit.dayNotes.remove(key);
+                                } else {
+                                  habit.dayNotes[key] = text;
+                                }
+                              });
+                              widget.onHabitUpdated();
+                              Navigator.pop(ctx);
+                            },
+                            child: const Text('Save'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
-    if (confirmed == true) _reallyEndCount();
+    // The sheet mutates habit state as the user interacts; make sure the
+    // calendar underneath reflects the final state once it closes.
+    if (mounted) setState(() {});
   }
 
   Future<void> _editGoal() async {
@@ -1515,15 +1682,21 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
     }
   }
 
-  // Four distinct calendar states, theme-aware for the two gray shades:
-  //  - Red        : day is in the failed/broken list.
-  //  - Habit color: day is between startDate and today (inclusive) while active.
-  //  - Dark gray  : past day that was neither tracked nor failed.
-  //  - Light gray : future day (hasn't happened yet).
+  // Cell color precedence, highest first:
+  //  1. Custom day color — the user's explicit choice always wins. (A day
+  //     that is also missed keeps a small red corner dot so the missed
+  //     state can't be accidentally hidden; see _buildCalendar.)
+  //  2. Red (kBrokenColor) — day is in the failed/missed list.
+  //  3. Habit theme color — day is between startDate and today while active.
+  //  4. Dark gray — past day that was neither tracked nor failed.
+  //     Light gray — future day (hasn't happened yet).
   Color _colorForDay(BuildContext context, DateTime day) {
     final normalized = dateOnly(day);
     final today = dateOnly(DateTime.now());
     final key = fmtDate(normalized);
+
+    final customColor = habit.dayColors[key];
+    if (customColor != null) return Color(customColor);
 
     if (habit.failedDates.contains(key)) return kBrokenColor;
 
@@ -1541,7 +1714,11 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final isActive = habit.startDate != null;
-    final actionButtonColor = isActive ? kBrokenColor : habit.color;
+    // Three button states: start tracking, mark today missed (red), or undo
+    // today's missed mark (back to the habit color — a restorative action).
+    final missedToday = _alreadyMarkedMissedToday;
+    final actionButtonColor =
+        (isActive && !missedToday) ? kBrokenColor : habit.color;
 
     return Scaffold(
       appBar: AppBar(
@@ -1626,13 +1803,11 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
                   ),
                   onPressed: !isActive
                       ? _startCount
-                      : (_alreadyMarkedMissedToday ? null : _handleEndCountTap),
+                      : () => _toggleMissedFor(DateTime.now()),
                   child: Text(
                     !isActive
                         ? 'Start Count'
-                        : (_alreadyMarkedMissedToday
-                            ? 'Already Marked Today'
-                            : 'Missed Today'),
+                        : (missedToday ? 'Undo Missed Today' : 'Missed Today'),
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
@@ -1643,7 +1818,17 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
               ),
               const SizedBox(height: 32),
               _buildCalendar(context),
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
+              Text(
+                'Tap a day to mark/unmark it as missed • '
+                'Long-press for color & note',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: onSurfaceFaded(context, 0.5),
+                ),
+              ),
+              const SizedBox(height: 12),
               _buildLegend(context),
             ],
           ),
@@ -1688,32 +1873,86 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
     for (int i = 0; i < leadingBlanks; i++) {
       cells.add(const SizedBox.shrink());
     }
+    final today = dateOnly(DateTime.now());
     for (int day = 1; day <= daysInMonth; day++) {
       final date = DateTime(_visibleMonth.year, _visibleMonth.month, day);
-      final isToday = dateOnly(date) == dateOnly(DateTime.now());
+      final normalized = dateOnly(date);
+      final key = fmtDate(normalized);
+      final isToday = normalized == today;
+      final isFuture = normalized.isAfter(today);
+      final isMissed = habit.failedDates.contains(key);
+      final hasCustomColor = habit.dayColors.containsKey(key);
+      final hasNote = habit.dayNotes.containsKey(key);
       final cellColor = _colorForDay(context, date);
       final textColor = contrastingTextColor(cellColor);
-      cells.add(
-        Container(
-          decoration: BoxDecoration(
-            color: cellColor,
-            border: Border.all(
-              color: Theme.of(context).scaffoldBackgroundColor,
-              width: 1.5,
-            ),
-            borderRadius: BorderRadius.circular(4),
+
+      final cell = Container(
+        decoration: BoxDecoration(
+          color: cellColor,
+          border: Border.all(
+            color: Theme.of(context).scaffoldBackgroundColor,
+            width: 1.5,
           ),
-          alignment: Alignment.center,
-          child: Text(
-            '$day',
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: isToday ? FontWeight.w800 : FontWeight.w500,
-              color: textColor,
-              decoration: isToday ? TextDecoration.underline : null,
-            ),
-          ),
+          borderRadius: BorderRadius.circular(4),
         ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Text(
+              '$day',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: isToday ? FontWeight.w800 : FontWeight.w500,
+                color: textColor,
+                decoration: isToday ? TextDecoration.underline : null,
+              ),
+            ),
+            // A custom color takes over the cell background, so a missed
+            // day would otherwise become invisible — keep it flagged with
+            // a red corner dot (ringed for contrast on reddish swatches).
+            if (isMissed && hasCustomColor)
+              Positioned(
+                top: 2,
+                right: 2,
+                child: Container(
+                  width: 7,
+                  height: 7,
+                  decoration: BoxDecoration(
+                    color: kBrokenColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: textColor, width: 1),
+                  ),
+                ),
+              ),
+            // Note indicator: contrast-derived dot so it reads against
+            // every palette swatch in both themes.
+            if (hasNote)
+              Positioned(
+                bottom: 2,
+                right: 2,
+                child: Container(
+                  width: 5,
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: textColor,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+
+      cells.add(
+        // Future days are inert: they can't be missed, colored, or
+        // annotated — they haven't happened yet.
+        isFuture
+            ? cell
+            : GestureDetector(
+                onTap: () => _toggleMissedFor(date),
+                onLongPress: () => _showDayOptions(date),
+                child: cell,
+              ),
       );
     }
     for (int i = 0; i < trailingBlanks; i++) {
