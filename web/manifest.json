@@ -1,11 +1,11 @@
 {
-    "name": "adad",
+    "name": "Adad — Habit Tracker",
     "short_name": "adad",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#121212",
+    "theme_color": "#121212",
+    "description": "Track daily habits with flexible streaks, a color-coded calendar, per-day notes, and a to-do list.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

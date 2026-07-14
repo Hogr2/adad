@@ -68,7 +68,17 @@ class NotificationService {
   final FlutterLocalNotificationsPlugin _plugin =
       FlutterLocalNotificationsPlugin();
 
+  /// Local scheduled notifications only exist on mobile.
+  /// flutter_local_notifications has no web implementation, and iOS Safari
+  /// can't do locally-scheduled notifications at all — so on web every
+  /// public method of this service is an early-return no-op. Guarding here
+  /// (instead of at each call site) keeps Android behavior byte-for-byte
+  /// identical while making it impossible for the web build to touch the
+  /// native-only plugin stack.
+  static bool get supportsNotifications => !kIsWeb;
+
   Future<void> init() async {
+    if (!supportsNotifications) return;
     try {
       // Timezone database must be initialized before any zonedSchedule call.
       tz.initializeTimeZones();
@@ -167,6 +177,7 @@ class NotificationService {
   int _habitNotificationId(String habitId) => habitId.hashCode & 0x7FFFFFFF;
 
   Future<void> scheduleHabitReminder(Habit habit, TimeOfDay time) async {
+    if (!supportsNotifications) return;
     try {
       final notificationId = _habitNotificationId(habit.id);
       await _plugin.cancel(notificationId);
@@ -260,6 +271,7 @@ class NotificationService {
   }
 
   Future<void> cancelHabitReminder(String habitId) async {
+    if (!supportsNotifications) return;
     try {
       await _plugin.cancel(_habitNotificationId(habitId));
     } catch (e, st) {
@@ -287,7 +299,13 @@ void main() async {
       ? ThemeMode.dark
       : ThemeMode.light;
 
-  await NotificationService.instance.init();
+  // Web is tracking-only: the notification stack is never initialized there
+  // (init() is also a no-op on web internally — this outer guard just makes
+  // the startup path obvious and keeps web startup free of native-only
+  // plugin calls entirely).
+  if (!kIsWeb) {
+    await NotificationService.instance.init();
+  }
 
   // Per-habit reminders are re-scheduled from HabitsListScreen once the
   // habit list loads (see _loadHabits), as a safety net in addition to the
@@ -927,17 +945,24 @@ class _HabitsListScreenState extends State<HabitsListScreen>
                   selected: selectedColor,
                   onSelected: (c) => setDialogState(() => selectedColor = c),
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'Daily reminder (optional)',
-                  style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
-                ),
-                const SizedBox(height: 8),
-                _reminderPickerRow(
-                  ctx: ctx,
-                  time: reminderTime,
-                  onChanged: (t) => setDialogState(() => reminderTime = t),
-                ),
+                // Reminders don't exist on web (no plugin support, and iOS
+                // Safari can't schedule local notifications) — offering the
+                // picker there would be a broken promise. The model still
+                // carries reminderHour/Minute so habits created on Android
+                // keep their reminder data intact through a web session.
+                if (!kIsWeb) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Daily reminder (optional)',
+                    style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
+                  ),
+                  const SizedBox(height: 8),
+                  _reminderPickerRow(
+                    ctx: ctx,
+                    time: reminderTime,
+                    onChanged: (t) => setDialogState(() => reminderTime = t),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1023,17 +1048,24 @@ class _HabitsListScreenState extends State<HabitsListScreen>
                   selected: selectedColor,
                   onSelected: (c) => setDialogState(() => selectedColor = c),
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'Daily reminder (optional)',
-                  style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
-                ),
-                const SizedBox(height: 8),
-                _reminderPickerRow(
-                  ctx: ctx,
-                  time: reminderTime,
-                  onChanged: (t) => setDialogState(() => reminderTime = t),
-                ),
+                // Reminders don't exist on web (no plugin support, and iOS
+                // Safari can't schedule local notifications) — offering the
+                // picker there would be a broken promise. The model still
+                // carries reminderHour/Minute so habits created on Android
+                // keep their reminder data intact through a web session.
+                if (!kIsWeb) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    'Daily reminder (optional)',
+                    style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
+                  ),
+                  const SizedBox(height: 8),
+                  _reminderPickerRow(
+                    ctx: ctx,
+                    time: reminderTime,
+                    onChanged: (t) => setDialogState(() => reminderTime = t),
+                  ),
+                ],
               ],
             ),
           ),
@@ -1485,13 +1517,16 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
       );
   }
 
-  /// Long-press options for a single day: missed toggle, custom color,
-  /// and a free-text note.
+  /// Long-press options for a single day. Ordered by how often each is
+  /// used: note first (prominent, no scrolling needed), missed switch, and
+  /// the color palette last, collapsed behind an expandable row since it's
+  /// the least-used control and the tallest.
   Future<void> _showDayOptions(DateTime day) async {
     final key = fmtDate(dateOnly(day));
     final noteController = TextEditingController(
       text: habit.dayNotes[key] ?? '',
     );
+    bool colorExpanded = false;
 
     await showModalBottomSheet(
       context: context,
@@ -1537,52 +1572,7 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      SwitchListTile(
-                        contentPadding: EdgeInsets.zero,
-                        title: const Text('Marked as missed'),
-                        activeThumbColor: kBrokenColor,
-                        value: isMissed,
-                        onChanged: (_) {
-                          _toggleMissedFor(day);
-                          setSheetState(() {});
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          Text(
-                            'Day color',
-                            style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
-                          ),
-                          if (customColorValue != null)
-                            TextButton(
-                              onPressed: () {
-                                setState(() => habit.dayColors.remove(key));
-                                widget.onHabitUpdated();
-                                setSheetState(() {});
-                              },
-                              child: const Text('Remove color'),
-                            ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      _ColorPicker(
-                        // 0x00000000 matches no palette entry, so nothing
-                        // renders as selected when no custom color is set.
-                        selected: customColorValue != null
-                            ? Color(customColorValue)
-                            : const Color(0x00000000),
-                        onSelected: (c) {
-                          setState(
-                            () => habit.dayColors[key] = c.toARGB32(),
-                          );
-                          widget.onHabitUpdated();
-                          setSheetState(() {});
-                        },
-                      ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 12),
                       Text(
                         'Note',
                         style: TextStyle(color: onSurfaceFaded(ctx, 0.6)),
@@ -1632,6 +1622,87 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
                           ),
                         ],
                       ),
+                      SwitchListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: const Text('Marked as missed'),
+                        activeThumbColor: kBrokenColor,
+                        value: isMissed,
+                        onChanged: (_) {
+                          _toggleMissedFor(day);
+                          setSheetState(() {});
+                        },
+                      ),
+                      // Collapsible color section: the header row shows the
+                      // current swatch so the state is visible even while
+                      // the palette itself stays folded away.
+                      InkWell(
+                        onTap: () => setSheetState(
+                          () => colorExpanded = !colorExpanded,
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 10),
+                          child: Row(
+                            children: [
+                              Text(
+                                'Day color',
+                                style: TextStyle(
+                                  color: onSurfaceFaded(ctx, 0.6),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              if (customColorValue != null)
+                                Container(
+                                  width: 16,
+                                  height: 16,
+                                  decoration: BoxDecoration(
+                                    color: Color(customColorValue),
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                      color: onSurfaceFaded(ctx, 0.2),
+                                    ),
+                                  ),
+                                ),
+                              const Spacer(),
+                              Icon(
+                                colorExpanded
+                                    ? CupertinoIcons.chevron_up
+                                    : CupertinoIcons.chevron_down,
+                                size: 16,
+                                color: onSurfaceFaded(ctx, 0.5),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      if (colorExpanded) ...[
+                        const SizedBox(height: 4),
+                        _ColorPicker(
+                          // 0x00000000 matches no palette entry, so nothing
+                          // renders as selected when no custom color is set.
+                          selected: customColorValue != null
+                              ? Color(customColorValue)
+                              : const Color(0x00000000),
+                          onSelected: (c) {
+                            setState(
+                              () => habit.dayColors[key] = c.toARGB32(),
+                            );
+                            widget.onHabitUpdated();
+                            setSheetState(() {});
+                          },
+                        ),
+                        if (customColorValue != null)
+                          Align(
+                            alignment: Alignment.centerRight,
+                            child: TextButton(
+                              onPressed: () {
+                                setState(() => habit.dayColors.remove(key));
+                                widget.onHabitUpdated();
+                                setSheetState(() {});
+                              },
+                              child: const Text('Remove color'),
+                            ),
+                          ),
+                      ],
                     ],
                   ),
                 ),
@@ -1643,6 +1714,62 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
     );
     // The sheet mutates habit state as the user interacts; make sure the
     // calendar underneath reflects the final state once it closes.
+    if (mounted) setState(() {});
+  }
+
+  /// Tap target for a day that has a note: a lightweight read popup. It
+  /// must still offer the missed toggle — tapping a noted day no longer
+  /// toggles missed directly, so without this button a noted day would be
+  /// an undo dead end (the exact trap this feature set exists to fix).
+  Future<void> _showNotePopup(DateTime day) async {
+    final key = fmtDate(dateOnly(day));
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          final isMissed = habit.failedDates.contains(key);
+          return AlertDialog(
+            title: Text(key),
+            content: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 240),
+              child: SingleChildScrollView(
+                child: Text(
+                  habit.dayNotes[key] ?? '',
+                  style: TextStyle(
+                    fontSize: 15,
+                    height: 1.4,
+                    color: onSurface(ctx),
+                  ),
+                ),
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () {
+                  _toggleMissedFor(day);
+                  setDialogState(() {});
+                },
+                child: Text(
+                  isMissed ? 'Unmark as missed' : 'Mark as missed',
+                  style: const TextStyle(color: kBrokenColor),
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.pop(ctx);
+                  _showDayOptions(day);
+                },
+                child: const Text('Edit'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Close'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
     if (mounted) setState(() {});
   }
 
@@ -1820,8 +1947,8 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
               _buildCalendar(context),
               const SizedBox(height: 8),
               Text(
-                'Tap a day to mark/unmark it as missed • '
-                'Long-press for color & note',
+                'Tap a day to toggle missed (noted days open their note) • '
+                'Long-press for all options',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 12,
@@ -1945,11 +2072,15 @@ class _HabitDetailScreenState extends State<HabitDetailScreen> {
 
       cells.add(
         // Future days are inert: they can't be missed, colored, or
-        // annotated — they haven't happened yet.
+        // annotated — they haven't happened yet. For past/today cells the
+        // tap is state-dependent: a noted day opens its note for reading
+        // (never silently toggling missed); a plain day toggles missed.
         isFuture
             ? cell
             : GestureDetector(
-                onTap: () => _toggleMissedFor(date),
+                onTap: hasNote
+                    ? () => _showNotePopup(date)
+                    : () => _toggleMissedFor(date),
                 onLongPress: () => _showDayOptions(date),
                 child: cell,
               ),
